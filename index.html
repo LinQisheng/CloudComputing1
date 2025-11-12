@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gestor de Tareas</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Gestor de Tareas</h1>
+
+<!-- AUTH -->
+<section id="auth" class="auth-shell">
+    <!-- LOGIN -->
+    <div id="login_card" class="card auth-card">
+      <h2 class="auth-title">Iniciar sesión</h2>
+      <div class="auth-fields">
+        <input id="login_email" placeholder="Email" type="email" />
+        <input id="login_pass" placeholder="Contraseña" type="password" />
+        <button class="btn-primary" onclick="login()">Entrar</button>
+      </div>
+      <p class="auth-alt">
+        ¿No tienes una cuenta?
+        <a href="#" onclick="showRegister();return false;">Regístrate</a>
+      </p>
+    </div>
+  
+    <!-- REGISTER (oculto por defecto) -->
+    <div id="register_card" class="card auth-card hidden">
+      <h2 class="auth-title">Crear cuenta</h2>
+      <div class="auth-fields">
+        <input id="reg_name" placeholder="Nombre" />
+        <input id="reg_email" placeholder="Email" type="email" />
+        <input id="reg_pass" placeholder="Contraseña" type="password" />
+        <button class="btn-primary" onclick="register()">Crear cuenta</button>
+      </div>
+      <p class="auth-alt">
+        ¿Ya tienes cuenta?
+        <a href="#" onclick="showLogin();return false;">Inicia sesión</a>
+      </p>
+    </div>
+  </section>
+
+    <!-- APP -->
+    <section id="app" class="hidden">
+      <div class="bar">
+        <span id="user_span"></span>
+        <button onclick="logout()">Salir</button>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Proyecto</h2>
+          <input id="proj_name" placeholder="Nombre del proyecto" />
+          <input id="proj_desc" placeholder="Descripción" />
+          <button onclick="createProject()">Crear</button>
+          <ul id="projects"></ul>
+        </div>
+
+        <div class="card">
+          <h2>Tarea</h2>
+          <select id="task_project"></select>
+          <input id="task_title" placeholder="Título" />
+          <input id="task_due" type="date" />
+          <select id="task_priority">
+            <option value="baja">baja</option>
+            <option value="media" selected>media</option>
+            <option value="alta">alta</option>
+          </select>
+          <textarea id="task_desc" placeholder="Descripción"></textarea>
+          <button onclick="createTask()">Agregar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Listado de Tareas</h2>
+        <select id="filter_project" onchange="loadTasks()">
+          <option value="">(Todos)</option>
+        </select>
+        <ul id="tasks"></ul>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const API = (location.hostname.includes('localhost') 
+    ? 'http://localhost/taskmanager/api/api.php' 
+    : 'https://e-portafoliodisruptivo.com/taskmanager/api/api.php');
+    // Cache para evitar perder datos al hacer PATCH (✔)
+    let tasksCache = new Map(); // key: id, value: tarea completa
+
+    async function api(path, method='GET', data=null, query={}) {
+        const url = new URL(API);
+        url.searchParams.set('path', path);
+        for (const k in query) url.searchParams.set(k, query[k]);
+      
+        const res = await fetch(url.toString(), {
+          method,
+          headers: {'Content-Type':'application/json'},
+          credentials: 'include',
+          body: data ? JSON.stringify(data) : null
+        });
+      
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        const isJSON = ct.includes('application/json');
+      
+        if (!res.ok) {
+          if (isJSON) {
+            const j = await res.json().catch(()=>({}));
+            throw { status: res.status, error: j.error || JSON.stringify(j) || `HTTP ${res.status}` };
+          } else {
+            const t = await res.text().catch(()=> '');
+            throw { status: res.status, error: `HTTP ${res.status}. ${t.slice(0,300)}` };
+          }
+        }
+      
+        return isJSON ? res.json() : res.text();
+      }
+
+    async function register(){
+        const name  = document.getElementById('reg_name').value.trim();
+        const email = document.getElementById('reg_email').value.trim().toLowerCase();
+        const password = document.getElementById('reg_pass').value;
+      
+        if(!name || !email || !password){
+          alert('Completa nombre, email y contraseña');
+          return;
+        }
+      
+        // Deshabilita el botón para evitar doble envío
+        const btn = document.querySelector('#register_card .btn-primary');
+        const oldText = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Creando cuenta...';
+      
+        try{
+          // 1) Registrar
+          await api('auth/register','POST',{ name, email, password });
+      
+          // 2) Login automático
+          const r = await api('auth/login','POST',{ email, password });
+      
+          // 3) Pasar a la app
+          document.getElementById('user_span').textContent = 'Hola, ' + r.user.name;
+          document.getElementById('auth').classList.add('hidden');
+          document.getElementById('app').classList.remove('hidden');
+      
+          // 4) Cargar datos iniciales
+          await loadProjects();
+      
+          // Limpieza (opcional)
+          document.getElementById('reg_name').value = '';
+          document.getElementById('reg_email').value = '';
+          document.getElementById('reg_pass').value = '';
+        }catch(e){
+          // Si el correo ya existe (409), muestra login y prellena email
+          const msg = e?.error || 'Error';
+          alert(msg);
+          if (msg.toLowerCase().includes('registrado')) {
+            showLogin();
+            document.getElementById('login_email').value = email;
+            document.getElementById('login_pass').focus();
+          }
+        }finally{
+          btn.disabled = false; btn.textContent = oldText;
+        }
+      }
+
+    async function login(){
+        try{
+          const email = document.getElementById('login_email').value.trim().toLowerCase();
+          const password = document.getElementById('login_pass').value;
+          const r = await api('auth/login','POST',{ email, password });
+          document.getElementById('user_span').textContent = 'Hola, '+r.user.name;
+          document.getElementById('auth').classList.add('hidden');
+          document.getElementById('app').classList.remove('hidden');
+          await loadProjects();
+        }catch(e){ alert(e.error||'Error'); }
+      }
+
+    async function logout(){
+      await api('auth/logout','POST');
+      location.reload();
+    }
+
+    async function createProject(){
+      const name = document.getElementById('proj_name').value;
+      const description = document.getElementById('proj_desc').value;
+      if(!name) return alert('Nombre requerido');
+      await api('projects','POST',{name, description});
+      document.getElementById('proj_name').value='';
+      document.getElementById('proj_desc').value='';
+      await loadProjects();
+    }
+
+    async function loadProjects(){
+      const list = await api('projects','GET');
+      const ul = document.getElementById('projects'); ul.innerHTML='';
+      const sel1 = document.getElementById('task_project'); sel1.innerHTML='';
+      const sel2 = document.getElementById('filter_project'); sel2.innerHTML='<option value="">(Todos)</option>';
+
+      list.forEach(p=>{
+        const li=document.createElement('li');
+        li.textContent = p.name;
+        ul.appendChild(li);
+
+        const o1=document.createElement('option'); 
+        o1.value=p.id; o1.textContent=p.name; sel1.appendChild(o1);
+
+        const o2=document.createElement('option'); 
+        o2.value=p.id; o2.textContent=p.name; sel2.appendChild(o2);
+      });
+
+      await loadTasks();
+    }
+
+    async function createTask(){
+      const project_id = parseInt(document.getElementById('task_project').value);
+      const title = document.getElementById('task_title').value;
+      const description = document.getElementById('task_desc').value;
+      const priority = document.getElementById('task_priority').value;
+      const due_date = document.getElementById('task_due').value || null;
+      if(!project_id || !title) return alert('Proyecto y título requeridos');
+      await api('tasks','POST',{project_id,title,description,priority,due_date});
+      document.getElementById('task_title').value='';
+      document.getElementById('task_desc').value='';
+      document.getElementById('task_due').value='';
+      await loadTasks();
+    }
+
+    async function loadTasks(){
+      const pid = document.getElementById('filter_project').value;
+      const list = await api('tasks','GET',null, pid? {project_id:pid}:{});
+      const ul = document.getElementById('tasks'); ul.innerHTML='';
+      tasksCache.clear();
+
+      list.forEach(t=>{
+        tasksCache.set(Number(t.id), t); // cachear
+        const li=document.createElement('li');
+        li.innerHTML = `
+          <strong>[${t.status}]</strong> ${t.title}
+          ${t.due_date? ' — vence: '+t.due_date: ''} — 
+          <em>prio:${t.priority}</em>
+          <button data-id="${t.id}" class="btn-done">✔</button>
+          <button data-id="${t.id}" class="btn-del">🗑</button>
+        `;
+        ul.appendChild(li);
+      });
+
+      ul.querySelectorAll('.btn-done').forEach(b=> 
+        b.addEventListener('click', async (e)=>{
+          const id = parseInt(e.currentTarget.getAttribute('data-id'));
+          const t = tasksCache.get(id);
+          if (!t) return;
+          // enviamos todos los campos para NO borrar info
+          await api('tasks/'+id,'PATCH',{
+            title: t.title,
+            description: t.description || '',
+            status: 'done',
+            priority: t.priority || 'media',
+            due_date: t.due_date || null,
+            assignee_id: t.assignee_id || null
+          });
+          await loadTasks();
+        })
+      );
+
+      ul.querySelectorAll('.btn-del').forEach(b=> 
+        b.addEventListener('click', async (e)=>{
+          const id = parseInt(e.currentTarget.getAttribute('data-id'));
+          if(confirm('¿Eliminar tarea?')){
+            await api('tasks/'+id,'DELETE');
+            await loadTasks();
+          }
+        })
+      );
+    }
+    function showLogin(){
+        document.getElementById('login_card').classList.remove('hidden');
+        document.getElementById('register_card').classList.add('hidden');
+      }
+      
+      function showRegister(){
+        document.getElementById('register_card').classList.remove('hidden');
+        document.getElementById('login_card').classList.add('hidden');
+      }
+      
+      // Al cargar la página, mostrar login por defecto
+      document.addEventListener('DOMContentLoaded', showLogin);
+  </script>
+</body>
+</html>

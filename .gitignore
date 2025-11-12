@@ -1,0 +1,11 @@
+# Ignorar archivos sensibles y temporales
+api/db.php
+api/dbcheck.php
+api/session_test.php
+tmp/
+*.log
+*.env
+*.bak
+.idea/
+.vscode/
+.DS_Store
